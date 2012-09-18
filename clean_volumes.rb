@@ -84,8 +84,9 @@ def delete_volumes(volumes, age_seconds, api_15 = false, dry_run = false)
   delete_items(volumes, age_seconds, api_15, dry_run) do |vol|
     if vol.status == "available"
       if vol.nickname.to_s.downcase.include?(SAVE_WORD) or
-        vol.description.to_s.downcase.include?(SAVE_WORD) or
-        vol.tags.any? { |tag| tag.downcase.include?(SAVE_WORD) }
+# commented out for slowness for now
+#        vol.tags.any? { |tag| tag.downcase.include?(SAVE_WORD) } or
+        vol.description.to_s.downcase.include?(SAVE_WORD)
         @logger.debug("Skipping #{vol.resource_uid}, nickname, description, or tags contain '#{SAVE_WORD}'")
         false
       else
@@ -99,8 +100,9 @@ end
 
 def delete_snapshots(snapshots, age_seconds, api_15 = false, dry_run = false)
   delete_items(snapshots, age_seconds, api_15, dry_run) do |s|
-    if s.nickname.to_s.downcase.include?(SAVE_WORD) or
-      s.tags.any? { |tag| tag.downcase.include?(SAVE_WORD) }
+    if s.nickname.to_s.downcase.include?(SAVE_WORD) # or
+# commented out for slowness for now
+#      s.tags.any? { |tag| tag.downcase.include?(SAVE_WORD) }
       @logger.debug("Skipping #{s.resource_uid}, nickname, or tags contain '#{SAVE_WORD}'")
       false
     elsif s.nickname.to_s.downcase =~ /^ubuntu|^centos|^base_image/
