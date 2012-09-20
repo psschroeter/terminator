@@ -30,7 +30,10 @@ ENV['REST_CONNECTION_LOG'] = "/tmp/rest_connection.log"
 puts "Logging rest connection calls to: #{ENV['REST_CONNECTION_LOG']}"
 
 SECONDS_IN_DAY = 3600*24
-SAVE_WORD = "save"
+# save and do_not should cover human intervention cases
+# install refers to "SQL2K8R2-Install-Media" volume, which silver team needs
+# to build images
+SAFE_WORDS = ["save", "install", "do_not", "do not", "media"]
 EC2_REGIONS = [
   [1, 'us-east-1'],
   [2, 'eu-west-1'],
@@ -48,7 +51,7 @@ def handle_delete(item, dry_run)
     delete_msg = "DELETING"
   end
 
-  @logger.info("#{delete_msg} #{item.href}")
+  @logger.info("#{delete_msg} #{item.href} (#{item.nickname})")
   unless dry_run
     begin
       #item.destroy
@@ -69,8 +72,10 @@ def delete_items(items, age_seconds, api_15, dry_run, &blk)
       # but volumes do
       i.created_at ||= i.aws_started_at
     end
+    # Google doesn't return created_at field, fall back to updated_at
+    create_time = i.created_at||i.updated_at
 
-    elapsed_secs = (Time.now - Time.parse(i.created_at)).to_i
+    elapsed_secs = (Time.now - Time.parse(create_time)).to_i
     @logger.debug("RS_ID:#{i.rs_id} RESOURCE_ID:#{i.resource_uid} NICKNAME:#{i.nickname} STATE:#{i.status} AGE(HRS):#{elapsed_secs/3600}")
     if elapsed_secs < age_seconds 
       @logger.debug("Skipping #{i.resource_uid}, too young")
@@ -81,14 +86,16 @@ def delete_items(items, age_seconds, api_15, dry_run, &blk)
 end
 
 def delete_volumes(volumes, age_seconds, api_15 = false, dry_run = false)
-  delete_items(volumes, age_seconds, api_15, dry_run) do |vol|
-    if vol.status == "available"
-      if vol.nickname.to_s.downcase.include?(SAVE_WORD) or
-# commented out for slowness for now
-#        vol.tags.any? { |tag| tag.downcase.include?(SAVE_WORD) } or
-        vol.description.to_s.downcase.include?(SAVE_WORD)
-        @logger.debug("Skipping #{vol.resource_uid}, nickname, description, or tags contain '#{SAVE_WORD}'")
+  delete_items(volumes, age_seconds, api_15, dry_run) do |i|
+    if i.status == "available"
+      if SAFE_WORDS.any? { |w| i.nickname.to_s.downcase.include?(w) } or 
+        SAFE_WORDS.any? { |w| i.description.to_s.downcase.include?(w) }
+        @logger.debug("Skipping #{i.resource_uid}, nickname or description contain a safe word")
         false
+# commented out for slowness for now
+#      elsif i.tags.any? { |tag| SAFE_WORDS.any? {|w| tag.downcase.include?(w) } }
+#        @logger.debug("Skipping #{i.resource_uid} tags contain a safe word")
+#        false
       else
         true
       end
@@ -99,14 +106,13 @@ def delete_volumes(volumes, age_seconds, api_15 = false, dry_run = false)
 end
 
 def delete_snapshots(snapshots, age_seconds, api_15 = false, dry_run = false)
-  delete_items(snapshots, age_seconds, api_15, dry_run) do |s|
-    if s.nickname.to_s.downcase.include?(SAVE_WORD) # or
-# commented out for slowness for now
-#      s.tags.any? { |tag| tag.downcase.include?(SAVE_WORD) }
-      @logger.debug("Skipping #{s.resource_uid}, nickname, or tags contain '#{SAVE_WORD}'")
+  delete_items(snapshots, age_seconds, api_15, dry_run) do |i|
+    if SAFE_WORDS.any? { |w| i.nickname.to_s.downcase.include?(w) } or 
+      SAFE_WORDS.any? { |w| i.description.to_s.downcase.include?(w) }
+      @logger.debug("Skipping #{i.resource_uid}, nickname or description contain a safe word")
       false
-    elsif s.nickname.to_s.downcase =~ /^ubuntu|^centos|^base_image/
-      @logger.debug("Skipping #{s.resource_uid}, appears to be a base image snapshot") 
+    elsif i.nickname.to_s.downcase =~ /^ubuntu|^centos|^base_image/
+      @logger.debug("Skipping #{i.resource_uid}, appears to be a base image snapshot") 
       false
     else
       true
@@ -116,25 +122,27 @@ end
 
 ###### Begin Main #######
 
-EC2_REGIONS[5..5].each do |cloud_id, name|
+puts "Starting run, skipping any volumes and snapshots containing words: #{SAFE_WORDS.join(' ')}"
+
+EC2_REGIONS.each do |cloud_id, name|
   @logger.info "========== #{name} (volumes) ========="
   vols = Ec2EbsVolume.find_by_cloud_id(cloud_id.to_i)
   delete_volumes(vols, SECONDS_IN_DAY * opts[:volumes_age], api_15 = false, opts[:dry_run])
 end
-EC2_REGIONS[5..5].each do |cloud_id, name|
+EC2_REGIONS.each do |cloud_id, name|
   @logger.info "========== #{name} (snapshots) ========="
   snapshots = Ec2EbsSnapshot.find_by_cloud_id(cloud_id.to_i)
   delete_snapshots(snapshots, SECONDS_IN_DAY * opts[:snapshots_age], api_15 = false, opts[:dry_run])
 end
 
 clouds_with_volumes = Cloud.find_all.select {|c| c.links.any? {|l| l['rel'] =~ /volume/}}
-clouds_with_volumes[0..0].each do |cloud|
+clouds_with_volumes.each do |cloud|
   @logger.info "========== #{cloud.name} (volumes) ========="
   vols = McVolume.find_all(cloud.cloud_id.to_i)
   delete_volumes(vols, SECONDS_IN_DAY * opts[:volumes_age], api_15 = true, opts[:dry_run])
 end
 clouds_with_snapshots = Cloud.find_all.select {|c| c.links.any? {|l| l['rel'] =~ /snapshot/}}
-clouds_with_snapshots[0..0].each do |cloud|
+clouds_with_snapshots.each do |cloud|
   @logger.info "========== #{cloud.name} (snapshots) ========="
   snapshots = McVolumeSnapshot.find_all(cloud.cloud_id.to_i)
   delete_snapshots(snapshots, SECONDS_IN_DAY * opts[:snapshots_age], api_15 = true, opts[:dry_run])
